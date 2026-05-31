@@ -32,6 +32,7 @@
 
 #include <webots/skin.h>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <unordered_set>
 
 static constexpr double SURPRISED_YAW_OFFSET = M_PI_2;  // +90°
 
@@ -132,13 +133,16 @@ class HuNavPluginPrivate{
     bool goalReceived;
     std::string goalTopic;
 
-    /// \brief List of models to ignore. Used for vector field
-    std::vector<std::string> ignoreModels;
+	    /// \brief List of models to ignore. Used for vector field
+	    std::vector<std::string> ignoreModels;
+	    std::vector<std::pair<std::string, WbNodeRef>> obstacleModels;
 
     // Reference to the robot node as a supervisor.
     WbNodeRef robot_node = NULL;
 
-    geometry_msgs::msg::Pose new_goal;
+	    geometry_msgs::msg::Pose new_goal;
+
+	    void RefreshObstacleCache();
 
     // This is to animate the agents
     std::string skinDeviceName = "Robert";
@@ -245,13 +249,16 @@ void HuNavPlugin::init(
   }
 
   if (parameters.find("ignore_models") != parameters.end()) {
-    // Assume ignore_models is given as comma-separated names, e.g., "model1,model2"
     std::string modelsStr = parameters["ignore_models"];
     RCLCPP_INFO(node->get_logger(), "Parameter ignore_models: %s", modelsStr.c_str());
+    for (char &ch : modelsStr) {
+      if (ch == ',') {
+        ch = ' ';
+      }
+    }
     std::istringstream iss(modelsStr);
     std::string model;
-    while (std::getline(iss, model, ',')) {
-      // Optionally, remove whitespace from model
+    while (iss >> model) {
       hnav_->ignoreModels.push_back(model);
       RCLCPP_INFO(node->get_logger(), "Ignoring model: %s", model.c_str());
     }
@@ -274,6 +281,7 @@ void HuNavPlugin::init(
 
   if(hnav_->agentName == hnav_->overseerName){
     hnav_->InitializeAgents();
+    hnav_->RefreshObstacleCache();
     hnav_->HandleObstacles();
   }
 
@@ -930,12 +938,60 @@ std::vector<Eigen::Vector3d> HuNavPluginPrivate::GetClosestPointOnBoundingBox(
 }
 
 
-void HuNavPluginPrivate::HandleObstacles(){
+void HuNavPluginPrivate::RefreshObstacleCache() {
+  obstacleModels.clear();
 
-  // 1) Get the root of the scene tree
-  WbNodeRef root = wb_supervisor_node_get_root();     
+  WbNodeRef root = wb_supervisor_node_get_root();
+  if (!root) {
+    return;
+  }
+
   WbFieldRef worldChildren = wb_supervisor_node_get_field(root, "children");
-  int modelCount = wb_supervisor_field_get_count(worldChildren); 
+  if (!worldChildren) {
+    return;
+  }
+
+  std::unordered_set<std::string> pedestrianNames;
+  pedestrianNames.reserve(pedestrians.size());
+  for (const auto &ped : pedestrians) {
+    pedestrianNames.insert(ped.name);
+  }
+
+  int modelCount = wb_supervisor_field_get_count(worldChildren);
+  for (int m = 0; m < modelCount; ++m) {
+    WbNodeRef mdl = wb_supervisor_field_get_mf_node(worldChildren, m);
+    if (!mdl) {
+      continue;
+    }
+
+    WbFieldRef nameField = wb_supervisor_node_get_field(mdl, "name");
+    if (!nameField) {
+      continue;
+    }
+
+    const char *modelName = wb_supervisor_field_get_sf_string(nameField);
+    if (!modelName) {
+      continue;
+    }
+
+    const std::string name(modelName);
+    if (std::find(ignoreModels.begin(), ignoreModels.end(), name) != ignoreModels.end()) {
+      continue;
+    }
+    if (pedestrianNames.find(name) != pedestrianNames.end()) {
+      continue;
+    }
+
+    obstacleModels.emplace_back(name, mdl);
+  }
+
+  RCLCPP_INFO(node_->get_logger(), "Cached %zu obstacle models for HuNav agents", obstacleModels.size());
+}
+
+void HuNavPluginPrivate::HandleObstacles(){
+  if (obstacleModels.empty()) {
+    RefreshObstacleCache();
+  }
 
   for (size_t i = 0; i < this->pedestrians.size(); ++i)
   {
@@ -952,27 +1008,7 @@ void HuNavPluginPrivate::HandleObstacles(){
     double minDist = 5.0;
     ped.closest_obs.clear();
 
-    for (int m = 0; m < modelCount; ++m) {
-
-      WbNodeRef mdl = wb_supervisor_field_get_mf_node(worldChildren, m);
-      if (!mdl) continue;
-    
-      WbFieldRef nameField = wb_supervisor_node_get_field(mdl, "name");
-      if(!nameField) continue;
-      const char *modelName = wb_supervisor_field_get_sf_string(nameField);  
-      if (!modelName) continue;
-
-      // inside your m‐loop, after fetching modelName...
-      if ( std::find(ignoreModels.begin(), ignoreModels.end(), modelName) != ignoreModels.end()
-      || std::any_of(pedestrians.begin(), pedestrians.end(),
-                    [&](auto &o){ return o.name == modelName; }) ){
-            
-            // RCLCPP_WARN(node_->get_logger(), "Ignoring model: %s", modelName);
-            continue;
-      }
-
-      // RCLCPP_WARN(node_->get_logger(), "Evaluating Model: %s", modelName);
-
+    for (const auto &[modelName, mdl] : obstacleModels) {
       const auto cps = GetClosestPointOnBoundingBox(actorPos, mdl);
       for (auto &cp : cps) {
         double d = (cp - actorPos).norm();
@@ -983,10 +1019,9 @@ void HuNavPluginPrivate::HandleObstacles(){
           ped.closest_obs.push_back(p);
           RCLCPP_DEBUG(node_->get_logger(),
           " Pedestrian %d closest obstacle on '%s' at [%.2f, %.2f, %.2f]",
-          i, modelName, p.x, p.y, p.z);
+          i, modelName.c_str(), p.x, p.y, p.z);
         }
       }
-      
     }
 
     // RCLCPP_INFO(node_->get_logger(),

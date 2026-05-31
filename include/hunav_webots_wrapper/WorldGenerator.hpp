@@ -36,6 +36,7 @@
 #include <fstream> 
 #include <sstream>
 #include <iostream>
+#include <cctype>
 
 namespace hunav {
 
@@ -81,11 +82,24 @@ public:
 private:
   void tokenize(std::string const &str, const char delim,
                 std::vector<std::string> &out) {
-    // construct a stream from the string
-    std::stringstream ss(str);
+    std::string normalized = str;
+    if (delim != ' ') {
+      for (char &ch : normalized) {
+        if (ch == delim) {
+          ch = ' ';
+        }
+      }
+    }
 
+    for (char &ch : normalized) {
+      if (ch == ',') {
+        ch = ' ';
+      }
+    }
+
+    std::stringstream ss(normalized);
     std::string s;
-    while (std::getline(ss, s, delim)) {
+    while (ss >> s) {
       out.push_back(s);
     }
   }
