@@ -485,6 +485,131 @@ StraightStairs {
   ]
 }
 
+DEF STATIC_PERSON1 Solid {
+  translation -1.65358 3.19589 -0.44
+  rotation 0 0 1 0.35
+  children [
+    Transform {
+      translation 0 0 0.456
+      children [
+        CadShape {
+          url [
+            "../assets/characters/person1/meshes/person1.dae"
+          ]
+        }
+      ]
+    }
+  ]
+  name "static_person1"
+  model "static character"
+  boundingObject Transform {
+    translation 0 0 0.23
+    children [
+      Box {
+        size 0.8 1.6 0.45
+      }
+    ]
+  }
+}
+DEF STATIC_PERSON3 Solid {
+  translation 8.38706 3.09208 0.43
+  rotation 0 0 1 -1.25
+  children [
+    Transform {
+      scale 1.25 1.25 1.25
+      children [
+        CadShape {
+          url [
+            "../assets/characters/person3/meshes/person3.dae"
+          ]
+        }
+      ]
+    }
+  ]
+  name "static_person3"
+  model "static character"
+  boundingObject Transform {
+    translation 0 0 0.82
+    children [
+      Cylinder {
+        height 1.65
+        radius 0.3
+      }
+    ]
+  }
+}
+DEF STATIC_PERSON4 Solid {
+  translation -7.79684 -11.6189 0
+  rotation 0 0 1 1.2
+  children [
+    Transform {
+      scale 0.55 0.55 0.55
+      children [
+        CadShape {
+          url [
+            "../assets/characters/person4/meshes/person4.dae"
+          ]
+        }
+      ]
+    }
+  ]
+  name "static_person4"
+  model "static character"
+  boundingObject Transform {
+    translation 0 0 0.96
+    children [
+      Cylinder {
+        height 1.92
+        radius 0.35
+      }
+    ]
+  }
+}
+DEF STATIC_THUG Solid {
+  translation 1.78294 -10.5664 0
+  rotation 0 0 1 -0.7
+  children [
+    CadShape {
+      url [
+        "../assets/characters/thug/meshes/thug.dae"
+      ]
+    }
+  ]
+  name "static_thug"
+  model "static character"
+  boundingObject Transform {
+    translation 0 0 0.94
+    children [
+      Cylinder {
+        height 1.88
+        radius 0.35
+      }
+    ]
+  }
+}
+DEF STATIC_ROBBER Solid {
+  translation 0.576942 -5.88048 0
+  rotation 0 0 1 -2.9477853071795863
+  children [
+    CadShape {
+      url [
+        "../assets/characters/robber/meshes/robber.dae"
+      ]
+    }
+  ]
+  name "static_robber"
+  model "static character"
+  boundingObject Transform {
+    translation 0 0 0.96
+    children [
+      Cylinder {
+        height 1.9
+        radius 0.35
+      }
+    ]
+  }
+}
+
 DEF Tiago_Lite TiagoLite {
   translation 0.0 0.0 0.235361
   rotation -0.006363227570975 -0.002646197037686 -0.999976253206104 0.0
