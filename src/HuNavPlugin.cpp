@@ -32,6 +32,7 @@
 
 #include <webots/skin.h>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <unordered_map>
 #include <unordered_set>
 
 static constexpr double SURPRISED_YAW_OFFSET = M_PI_2;  // +90°
@@ -105,7 +106,10 @@ class HuNavPluginPrivate{
     rclcpp::Time rostime;
     double lastUpdate = wb_robot_get_time();
     double lastAgentUpdate = wb_robot_get_time();
+    double lastObstacleUpdate = -1.0;
     double startTime = wb_robot_get_time();
+    double agentUpdatePeriod = 0.2;
+    double obstacleUpdatePeriod = 0.2;
     bool computeAgentReady = false;
     bool reset;
 
@@ -136,6 +140,7 @@ class HuNavPluginPrivate{
 	    /// \brief List of models to ignore. Used for vector field
 	    std::vector<std::string> ignoreModels;
 	    std::vector<std::pair<std::string, WbNodeRef>> obstacleModels;
+	    std::vector<std::pair<WbNodeRef, std::vector<WbNodeRef>>> obstaclePrimitiveCache;
 
     // Reference to the robot node as a supervisor.
     WbNodeRef robot_node = NULL;
@@ -292,7 +297,7 @@ void HuNavPlugin::init(
    // 1) Load all available animations
   std::vector<std::string> animations = { "walk.bvh",           "69_02_walk_forward.bvh",   "137_28-normal_wait.bvh",
                                        "142_01-walk_childist.bvh", "07_04-slow_walk.bvh",      "02_01-walk.bvh",
-                                       "142_17-walk_scared.bvh",   "17_01-walk_with_anger.bvh", "141_20-waiting.bvh", "141_16-wave_hello.bvh"
+                                       "142_17-walk_scared.bvh",   "17_01-walk_with_anger.bvh", "141_20-waiting.bvh", "141_16-wave_hello.bvh",
                                        "jump.bvh", "normal_wait_mod.bvh" };
   // if (parameters.find("motion_file") != parameters.end())
   //   motion_name = parameters["motion_file"];
@@ -494,7 +499,7 @@ void HuNavPluginPrivate::InitializeAgents()
       this->init_pedestrians.push_back(ag);
     }
 
-    RCLCPP_INFO(this->node_->get_logger(), "Agents successfully initialized! Got %d pedestrians", this->pedestrians.size());
+    RCLCPP_INFO(this->node_->get_logger(), "Agents successfully initialized! Got %zu pedestrians", this->pedestrians.size());
 
   }
 
@@ -869,9 +874,18 @@ std::vector<Eigen::Vector3d> HuNavPluginPrivate::GetClosestPointOnBoundingBox(
   // 2) Transform point to local frame
   Eigen::Vector3d localPoint = R.transpose() * (point - center);
 
-  // 3) Get primitives
-  std::vector<WbNodeRef> prims;
-  collectCollisionPrimitives(modelNode, prims);
+  // 3) Get primitives. Collision primitive discovery is expensive in dense
+  // worlds, so cache it for each obstacle model until the obstacle cache resets.
+  auto cacheIt = std::find_if(
+      obstaclePrimitiveCache.begin(), obstaclePrimitiveCache.end(),
+      [&](const auto &entry) { return entry.first == modelNode; });
+  if (cacheIt == obstaclePrimitiveCache.end()) {
+    obstaclePrimitiveCache.emplace_back(modelNode, std::vector<WbNodeRef>{});
+    cacheIt = obstaclePrimitiveCache.end();
+    --cacheIt;
+    collectCollisionPrimitives(modelNode, cacheIt->second);
+  }
+  const auto &prims = cacheIt->second;
   if (prims.empty())
     return {};
 
@@ -940,6 +954,7 @@ std::vector<Eigen::Vector3d> HuNavPluginPrivate::GetClosestPointOnBoundingBox(
 
 void HuNavPluginPrivate::RefreshObstacleCache() {
   obstacleModels.clear();
+  obstaclePrimitiveCache.clear();
 
   WbNodeRef root = wb_supervisor_node_get_root();
   if (!root) {
@@ -989,6 +1004,13 @@ void HuNavPluginPrivate::RefreshObstacleCache() {
 }
 
 void HuNavPluginPrivate::HandleObstacles(){
+  const double now = wb_robot_get_time();
+  if (lastObstacleUpdate >= 0.0 &&
+      (now - lastObstacleUpdate) < obstacleUpdatePeriod) {
+    return;
+  }
+  lastObstacleUpdate = now;
+
   if (obstacleModels.empty()) {
     RefreshObstacleCache();
   }
@@ -1018,7 +1040,7 @@ void HuNavPluginPrivate::HandleObstacles(){
           p.x = cp.x(); p.y = cp.y(); p.z = cp.z();
           ped.closest_obs.push_back(p);
           RCLCPP_DEBUG(node_->get_logger(),
-          " Pedestrian %d closest obstacle on '%s' at [%.2f, %.2f, %.2f]",
+          " Pedestrian %zu closest obstacle on '%s' at [%.2f, %.2f, %.2f]",
           i, modelName.c_str(), p.x, p.y, p.z);
         }
       }
@@ -1232,7 +1254,7 @@ void HuNavPluginPrivate::manageAnimations() {
   }
 
   int steps = 4;
-  if(this->currentAnim.c_str() != "137_28-normal_wait.bvh")
+  if(this->currentAnim != "137_28-normal_wait.bvh")
     // Adjust step count: 2 to 5 depending on velocity (linear_vel)
     steps = std::clamp(static_cast<int>(1 + 3 * agent->linear_vel), 1, 6);
 
@@ -1278,7 +1300,8 @@ void HuNavPlugin::step() {
       request->current_agents = agents;
 
       hnav_->agents_request_start = hnav_->node_->now();  // New member variable
-      hnav_->agents_future = hnav_->rosSrvComputeAgentsClient->async_send_request(request);
+      auto future_and_request_id = hnav_->rosSrvComputeAgentsClient->async_send_request(request);
+      hnav_->agents_future = future_and_request_id.future.share();
 
       //***********If service does not respond, interpolate positions **********/
       if (hnav_->have_last_service) {
@@ -1374,9 +1397,12 @@ void HuNavPlugin::step() {
       }
 
       if (!hnav_->agent_future.valid()) {
-      auto request = std::make_shared<hunav_msgs::srv::ComputeAgent::Request>();
-      request->id = hnav_->agentId;
-      hnav_->agent_future = hnav_->rosSrvComputeAgentClient->async_send_request(request);
+        if ((now - hnav_->lastAgentUpdate) >= hnav_->agentUpdatePeriod) {
+          auto request = std::make_shared<hunav_msgs::srv::ComputeAgent::Request>();
+          request->id = hnav_->agentId;
+          auto future_and_request_id = hnav_->rosSrvComputeAgentClient->async_send_request(request);
+          hnav_->agent_future = future_and_request_id.future.share();
+        }
       } 
       else {
         auto status = hnav_->agent_future.wait_for(std::chrono::milliseconds(0));

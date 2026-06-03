@@ -21,7 +21,8 @@ import launch
 from launch.substitutions import LaunchConfiguration
 from launch.actions import (IncludeLaunchDescription, SetEnvironmentVariable, 
                             DeclareLaunchArgument, ExecuteProcess, Shutdown, 
-                            RegisterEventHandler, TimerAction, LogInfo)
+                            RegisterEventHandler, TimerAction, LogInfo,
+                            OpaqueFunction)
 from launch.substitutions.path_join_substitution import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 from launch import LaunchDescription
@@ -43,7 +44,6 @@ def get_robot_nodes(*args):
 
     package_dir = get_package_share_directory('hunav_webots_wrapper')
 
-    use_rviz = LaunchConfiguration('rviz', default=True)
     use_nav = LaunchConfiguration('navigation', default=True)
     use_sim_time = LaunchConfiguration('use_sim_time', default=True)
 
@@ -85,17 +85,6 @@ def get_robot_nodes(*args):
         respawn=True
     )
 
-    # RViz
-    rviz_config = os.path.join(get_package_share_directory('webots_ros2_tiago'), 'resource', 'default.rviz')
-    rviz = Node(
-        package='rviz2',
-        executable='rviz2',
-        output='screen',
-        arguments=['--display-config=' + rviz_config],
-        parameters=[{'use_sim_time': use_sim_time}],
-        condition=launch.conditions.IfCondition(use_rviz)
-    )
-
     # Navigation
     navigation_nodes = []
     nav2_params_file = 'nav2_params.yaml'
@@ -120,16 +109,37 @@ def get_robot_nodes(*args):
             ],
             condition=launch.conditions.IfCondition(use_nav)))
 
-     # Wait for the simulation to be ready to start RViz, the navigation and spawners
+     # Wait for the simulation to be ready to start navigation and spawners.
+    # WaitForControllerConnection starts its list directly, so keep RViz out of
+    # this path to avoid background rendering overhead in performance runs.
     waiting_nodes = WaitForControllerConnection(
         target_driver=tiago_driver,
-        nodes_to_start=[rviz] + navigation_nodes + ros_control_spawners
+        nodes_to_start=navigation_nodes + ros_control_spawners
     )
 
     return [
         tiago_driver,
         waiting_nodes,
     ]
+
+
+def get_rviz_node():
+    use_rviz = LaunchConfiguration('rviz')
+    use_sim_time = LaunchConfiguration('use_sim_time', default=True)
+    rviz_config = os.path.join(
+        get_package_share_directory('webots_ros2_tiago'),
+        'resource',
+        'default.rviz'
+    )
+
+    return Node(
+        package='rviz2',
+        executable='rviz2',
+        output='screen',
+        arguments=['--display-config=' + rviz_config],
+        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(use_rviz)
+    )
 
 
 def generate_launch_description():
@@ -320,6 +330,10 @@ def generate_launch_description():
         'navigation', default_value='True',
         description='If launch the Tiago navigation system'
     )
+    declare_rviz = DeclareLaunchArgument(
+        'rviz', default_value='True',
+        description='If launch RViz together with Webots'
+    )
     declare_ignore_models = DeclareLaunchArgument(
         'ignore_models', default_value='floor(1),floor,manhole,manhole(0),manhole(1),manhole(2)',
         description='list of Gazebo models that the agents should ignore as obstacles as the ground_plane. Indicate the models with a blank space between them'
@@ -346,6 +360,7 @@ def generate_launch_description():
     ld.add_action(declare_navgoal_topic)
     ld.add_action(declare_ignore_models)
     ld.add_action(declare_navigation)
+    ld.add_action(declare_rviz)
     ld.add_action(declare_arg_verbose)
     ld.add_action(declare_arg_namespace)
 
@@ -371,6 +386,7 @@ def generate_launch_description():
     tiago_driver, waiting_nodes = get_robot_nodes()
     ld.add_action(tiago_driver)
     ld.add_action(waiting_nodes)
+    ld.add_action(get_rviz_node())
 
     # This event handler respawns the robot nodes on simulation reset (supervisor process ends).
     reset_handler = launch.actions.RegisterEventHandler(
@@ -380,29 +396,27 @@ def generate_launch_description():
         )
     )
 
-    # If the folder does not exist, log an error.
-    resource_folder = os.path.join(package_dir, "resource")
+    def get_agent_controllers(context, *args, **kwargs):
+        resource_folder = os.path.join(package_dir, "resource")
+        if not os.path.isdir(resource_folder):
+            print("Resource folder not found:", resource_folder)
+            return []
 
-    if not os.path.isdir(resource_folder):
-        print("Resource folder not found:", resource_folder)
-    
-    # List all URDF files in that folder.
-    urdf_files = [f for f in os.listdir(resource_folder) if f.endswith('.urdf')]
-
-    # Create a list to hold all WebotsController actions.
-    agent_controllers = []
-    for urdf_file in urdf_files:
-        # Derive the robot name by stripping the .urdf extension.
-        agent_name = os.path.splitext(urdf_file)[0]
-        urdf_full_path = os.path.join(resource_folder, urdf_file)
-        
-        # Create a WebotsController node for this robot.
-        controller = WebotsController(
-            robot_name=agent_name,
-            parameters=[{'robot_description': urdf_full_path}],
-            respawn=True
+        urdf_files = sorted(
+            f for f in os.listdir(resource_folder)
+            if f.startswith('agent') and f.endswith('.urdf')
         )
-        agent_controllers.append(controller)
+
+        return [
+            WebotsController(
+                robot_name=os.path.splitext(urdf_file)[0],
+                parameters=[{
+                    'robot_description': os.path.join(resource_folder, urdf_file)
+                }],
+                respawn=True
+            )
+            for urdf_file in urdf_files
+        ]
 
     #Launch the agents controllers
     agents_launch_event = RegisterEventHandler(
@@ -412,7 +426,7 @@ def generate_launch_description():
                 LogInfo(msg='Robot ready, launching agent controllers...'),
                 TimerAction(
                     period=5.0,
-                    actions=agent_controllers
+                    actions=[OpaqueFunction(function=get_agent_controllers)]
                 )
             ]
         )
