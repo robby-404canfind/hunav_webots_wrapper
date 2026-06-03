@@ -2850,10 +2850,11 @@ DEF STATIC_PERSON1 Solid {
   name "static_person1"
   model "static character"
   boundingObject Transform {
-    translation 0 0 0.23
+    translation 0 0 0.82
     children [
-      Box {
-        size 0.8 1.6 0.45
+      Cylinder {
+        height 1.65
+        radius 0.3
       }
     ]
   }
